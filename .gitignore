@@ -1,0 +1,44 @@
+/.model_cache/
+.env
+.env.*
+!.env.example
+
+# Python bytecode and interpreter caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python build and packaging output
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test, coverage, and type-checker caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.tox/
+
+# Runtime data and downloaded model weights
+/storage/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and local editor/OS files
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
