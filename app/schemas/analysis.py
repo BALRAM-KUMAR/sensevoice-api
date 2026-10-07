@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime
 from app.schemas.audio import AudioFile
@@ -10,7 +10,6 @@ class AnalysisCreate(BaseModel):
     audio_id: UUID
     model_ids: List[str]
     hybrid_mode: bool = False
-    combine_strategy: Literal["weighted", "audio_first", "text_first", "majority_vote"] = "weighted"
 
 class AnalysisResponse(BaseModel):
     id: UUID

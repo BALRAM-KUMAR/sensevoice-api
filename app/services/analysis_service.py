@@ -39,12 +39,12 @@ async def run_analysis(request: AnalysisCreate, db: AsyncSession) -> dict:
     if request.hybrid_mode:
         try:
             transcript = await hybrid_service.transcribe(audio.storage_path)
+            text_result = await hybrid_service.analyze_text(transcript["text"])
         except Exception:
             analysis.status = "FAILED"
             analysis.completed_at = datetime.now(timezone.utc)
             await db.commit()
             raise
-        text_result = hybrid_service.analyze_text(transcript["text"])
         transcript_row = Transcript(
             analysis_id=analysis.id,
             language=transcript.get("language_code"),
@@ -56,24 +56,36 @@ async def run_analysis(request: AnalysisCreate, db: AsyncSession) -> dict:
             sentiment=text_result["sentiment"], sentiment_confidence=text_result["confidence"],
             status="SUCCESS",
         ))
-        audio_sentiments = []
+        audio_predictions = []
         for model_id in request.model_ids:
             model_result = await db.execute(select(ModelPrediction).where(
                 ModelPrediction.analysis_id == analysis.id,
                 ModelPrediction.model_id == model_id,
             ))
             model_prediction = model_result.scalar_one_or_none()
-            sentiment = (model_prediction.sentiment if model_prediction else None)
-            if not sentiment and model_prediction:
-                sentiment = hybrid_service._sentiment_from_emotion(model_prediction.dominant_emotion)
-            if sentiment:
-                audio_sentiments.append(sentiment.lower())
-        combined = hybrid_service.combine(audio_sentiments, text_result["sentiment"], request.combine_strategy)
-        db.add(ModelPrediction(
-            analysis_id=analysis.id, model_id=f"hybrid-combined-{request.combine_strategy}",
-            sentiment=combined["sentiment"], sentiment_confidence=1.0 if combined["sentiment"] else None,
+            if not model_prediction:
+                continue
+            score_result = await db.execute(select(PredictionScore).where(
+                PredictionScore.prediction_id == model_prediction.id
+            ))
+            audio_predictions.append({
+                "sentiment": model_prediction.sentiment,
+                "emotion": model_prediction.dominant_emotion,
+                "scores": [
+                    {"label": score.label, "score": score.score, "score_type": score.score_type}
+                    for score in score_result.scalars().all()
+                ],
+            })
+        audio_scores = hybrid_service.audio_distribution(audio_predictions)
+        combined = hybrid_service.combine(audio_scores, text_result)
+        combined_prediction = ModelPrediction(
+            analysis_id=analysis.id,
+            model_id="hybrid-combined-confidence_weighted_late_fusion",
+            sentiment=combined["sentiment"],
+            sentiment_confidence=combined["confidence"],
             status="SUCCESS",
-        ))
+        )
+        db.add(combined_prediction)
         await db.flush()
         text_prediction = (await db.execute(select(ModelPrediction).where(
             ModelPrediction.analysis_id == analysis.id,
@@ -81,6 +93,9 @@ async def run_analysis(request: AnalysisCreate, db: AsyncSession) -> dict:
         ))).scalar_one()
         for label, score in text_result["scores"].items():
             db.add(PredictionScore(prediction_id=text_prediction.id, label=label,
+                                   score=score, score_type="sentiment"))
+        for label, score in combined["scores"].items():
+            db.add(PredictionScore(prediction_id=combined_prediction.id, label=label,
                                    score=score, score_type="sentiment"))
         await db.commit()
 
@@ -192,21 +207,19 @@ async def get_analysis(analysis_id, db: AsyncSession) -> dict:
     transcript_prediction = next((p for p in prediction_list if p["model_id"] == "text-sentiment"), None)
     combined_prediction = next((p for p in prediction_list if p["model_id"].startswith("hybrid-combined-")), None)
     if transcript_prediction and combined_prediction:
-        audio_sentiments = []
-        for p in prediction_list:
-            if p["model_id"] in {"text-sentiment", combined_prediction["model_id"]}:
-                continue
-            sentiment = p["sentiment"] or hybrid_service._sentiment_from_emotion(p["emotion"])
-            if sentiment:
-                audio_sentiments.append(sentiment.lower())
-        hybrid_result = {
-            "audio_sentiment": hybrid_service.combine(
-                audio_sentiments, transcript_prediction["sentiment"], "audio_first"
-            )["audio_sentiment"],
-            "text_sentiment": transcript_prediction["sentiment"],
-            "sentiment": combined_prediction["sentiment"],
-            "strategy": combined_prediction["model_id"].removeprefix("hybrid-combined-"),
+        audio_predictions = [
+            p for p in prediction_list
+            if p["model_id"] not in {"text-sentiment", combined_prediction["model_id"]}
+        ]
+        transcript_scores = {
+            score["label"]: score["score"]
+            for score in transcript_prediction.get("scores", [])
+            if score.get("score_type") == "sentiment"
         }
+        hybrid_result = hybrid_service.combine(
+            hybrid_service.audio_distribution(audio_predictions),
+            {**transcript_prediction, "scores": transcript_scores},
+        )
         
     models_info = []
     for mid in models_used:

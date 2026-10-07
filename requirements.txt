@@ -11,3 +11,4 @@ soundfile
 funasr>=1.2.0
 huggingface_hub
 elevenlabs
+transformers>=4.40.0
